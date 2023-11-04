@@ -2,10 +2,15 @@
 extern "C" {
   extern int mrubyc(void);
   extern void my_putc(int c);
+  extern void my_print(char *buf);
 };
 
 void my_putc(int c){
   Serial.write(c);
+}
+
+void my_print(char *buf){
+  Serial.print(buf);
 }
 
 void setup() {
