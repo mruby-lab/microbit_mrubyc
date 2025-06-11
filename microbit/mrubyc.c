@@ -1,6 +1,8 @@
 // mruby/c boot
 
 #include "mrubyc.h"
+#include "c_robot.h"
+#include "c_flash_memory.h"
 
 #if !defined(MRBC_MEMORY_SIZE)
 #define MRBC_MEMORY_SIZE (1024*40)
@@ -9,7 +11,6 @@
 static uint8_t memory_pool[MRBC_MEMORY_SIZE];
 
 extern const uint8_t mrbbuf[];
-
 
 static void c_message(struct VM *vm, mrbc_value v[], int argc){
   if( argc == 0 ){
