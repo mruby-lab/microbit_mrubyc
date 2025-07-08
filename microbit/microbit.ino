@@ -1,209 +1,236 @@
+/**
+ * @file microbit.ino
+ * @brief mrbwrite.exeと連携し、mruby/cのバイトコードをFlashに書き込み、実行するファームウェア
+ * @version 2.1
+ * @date 2025-07-04
+ * @details
+ * このファームウェアは、mrbwriteの通信プロトコルに完全準拠しており、WebAPI(Smalruby等)との
+ * 連携を想定しています。各コマンドへの応答メッセージを仕様と完全に一致させています。
+ */
+
+#include <Arduino.h>
 #include <Wire.h>
+
+// --- mruby/c ヘッダ ---
 #ifdef __cplusplus
 extern "C" {
 #endif
-  #include "mrubyc.h"
+#include "mrubyc.h"
 #ifdef __cplusplus
 }
 #endif
 
-#define TIMEOUT_COUNT 50
-#define TIMEOUT_DELAY_MS 30
+// =================================================================
+// 定数定義
+// =================================================================
+#define SERIAL_BAUD_RATE 115200
 #define MAX_MRB_SIZE 2048
-uint8_t memory_pool[MAX_MRB_SIZE];
 #define FLASH_ADDR 0x0003F000
-int irep_size = 0;
+#define VERSION_STRING "+OK mruby/c v3.3 RITE0300 MRBW1.2\r\n"
 
+// =================================================================
+// グローバル変数・外部関数
+// =================================================================
 extern "C" {
-  extern int mrubyc(void);
-  extern void my_putc(int c);
-  extern void my_print(char *buf);
-  extern void my_println(char *buf);
-  extern void my_s_begin(int baudRate);
-  extern void my_w_wire(int data);
-  extern void my_w_begin(int b);
-  extern void my_w_beginTrans(int address);
-  extern void my_w_endTrans();
-  int uart_can_read_line(void);
-  int check_timeout(void);
+  // mruby/c VMが使用するメモリプール
+  uint8_t memory_pool[MAX_MRB_SIZE];
+  // Flashからバイトコードを読み込むための一時RAM領域
+  uint8_t mrbbuf_ram[MAX_MRB_SIZE];
+
+  // ボード固有のFlash書き込み/消去関数 (別途実装が必要)
   int flash_write_data(uint32_t addr, const uint8_t *data, int len);
   int flash_erase_page(uint32_t addr);
-  extern void mrb_load_irep_from_flash(uint32_t addr);
-  extern uint8_t mrbbuf_ram[]; 
 
-};
+  // mruby/c VM実行関数 (本体はmrubyc.cで定義)
+  int mrubyc(void);
 
-void my_putc(int c){
-  Serial.write(c);
+  // I2C ラッパー関数 (c_robot.c などから使用)
+  void my_w_beginTrans(int address) { Wire.beginTransmission(address); }
+  void my_w_wire(int data) { Wire.write(data); }
+  void my_w_endTrans() { Wire.endTransmission(); }
+
+  // シリアル出力ラッパー関数 (mrubyc.c などから使用)
+  void my_putc(int c) { if (Serial) Serial.write(c); }
+  void my_print(char *buf) { if (Serial) Serial.print(buf); }
+  void my_println(char *buf) { if (Serial) Serial.println(buf); }
 }
 
-void my_print(char *buf){
-  Serial.print(buf);
+// シリアルコマンド受信用バッファ
+char command_buf[64];
+int cmd_pos = 0;
+
+// =================================================================
+// コマンド処理関数群
+// =================================================================
+
+/**
+ * @brief 'help' コマンドを処理し、対応コマンド一覧を返す
+ */
+void cmd_help() {
+  Serial.write("+OK\r\n");
+  Serial.write("Commands:\r\n");
+  Serial.write("  version\r\n");
+  Serial.write("  clear\r\n");
+  Serial.write("  write <size>\r\n");
+  Serial.write("  execute\r\n");
+  Serial.write("  showprog\r\n");
+  Serial.write("+DONE\r\n");
 }
 
-void my_println(char *buf){
-  Serial.println(buf);
-}
-void my_s_begin(int baudRate){
-  Serial.begin(baudRate);
-}
-
-void my_w_wire(int data){
-  Wire.write(data);
+/**
+ * @brief 'version' コマンドを処理し、バージョン情報を返す
+ */
+void cmd_version() {
+  Serial.write(VERSION_STRING);
 }
 
-void my_w_begin(int b){
-  Wire.begin(b);
-}
-
-void my_w_beginTrans(int address){
-  Wire.beginTransmission(address);
-}
-void my_w_endTrans(){
-  Wire.endTransmission();
-}
-
-int uart_can_read_line(void) {
-  return Serial.available() > 0;
-}
-
-int check_timeout(void) {
-  for (int i = 0; i < TIMEOUT_COUNT; i++) {
-    // LEDをチカチカさせて受信待ちを視覚化（なくてもOK）
-    digitalWrite(LED_BUILTIN, HIGH);
-    delay(TIMEOUT_DELAY_MS);
-    digitalWrite(LED_BUILTIN, LOW);
-    delay(TIMEOUT_DELAY_MS);
-
-    if (uart_can_read_line()) {
-      return 1;  // UART入力あり
-    }
+/**
+ * @brief 'clear' コマンドを処理し、Flashを消去する
+ */
+void cmd_clear() {
+  if (flash_erase_page(FLASH_ADDR) == 0) {
+    Serial.write("+OK\r\n");
+  } else {
+    Serial.write("-ERR Flash erase failed\r\n");
   }
-  return 0;  // タイムアウト（UART入力なし）
 }
 
-int receive_bytecode(void) {
-  Serial.println("受信待機中...");
+/**
+ * @brief 'write' コマンドを処理し、バイトコードをFlashに書き込む
+ * @param size 書き込むバイトコードのサイズ
+ */
+void cmd_write(int size) {
+  if (size <= 0 || size > MAX_MRB_SIZE) {
+    Serial.write("-ERR invalid size\r\n");
+    return;
+  }
+
+  // プロトコル準拠の応答: "+OK Write bytecode"
+  Serial.write("+OK Write bytecode\r\n");
+  Serial.flush();
+
+  // バイトコード受信前にシリアルバッファをクリア
+  while (Serial.available()) {
+    Serial.read();
+  }
+
+  uint8_t *buf = (uint8_t *)malloc(size);
+  if (!buf) {
+    Serial.write("-ERR malloc failed\r\n");
+    return;
+  }
+
+  int received = Serial.readBytes((char *)buf, size);
+  if (received != size) {
+    Serial.write("-ERR receive timeout\r\n");
+    free(buf);
+    return;
+  }
+
+  if (memcmp(buf, "RITE", 4) != 0) {
+    Serial.write("-ERR No RITE header\r\n");
+    free(buf);
+    return;
+  }
   
-  while (true) {
-    if (Serial.available()) {
-      uint8_t b = Serial.read();
-      if (b == 'R') break;  // 'R'が来たら受信開始
-    }
-      }
-
-  memory_pool[0] = 'R';
-  int index = 1;
-
-  while (index < MAX_MRB_SIZE) {
-    if (Serial.available()) {
-      memory_pool[index++] = Serial.read();
-    }
+  if (flash_erase_page(FLASH_ADDR) != 0) {
+    Serial.write("-ERR Flash erase failed\r\n");
+    free(buf);
+    return;
   }
 
-  Serial.println("受信完了");
-  return index;
+  if (flash_write_data(FLASH_ADDR, buf, size) != 0) {
+    Serial.write("-ERR Flash write failed\r\n");
+    free(buf);
+    return;
+  }
+
+  // プロトコル準拠の応答: "+DONE"
+  Serial.write("+DONE\r\n");
+  free(buf);
 }
 
+/**
+ * @brief 'execute' コマンドを処理し、Flash上のプログラムを実行する
+ */
+void cmd_execute() {
+  const uint8_t *p = (const uint8_t *)FLASH_ADDR;
+  if (memcmp(p, "RITE", 4) != 0) {
+    Serial.write("-ERR No bytecode\r\n");
+    return;
+  }
+  
+  Serial.write("+OK Execute mruby/c.\r\n");
+  
+  memcpy(mrbbuf_ram, p, MAX_MRB_SIZE);
+  mrubyc(); // mruby/c VMを起動
+}
 
+/**
+ * @brief 受信したコマンド文字列を解釈し、対応する関数を呼び出す
+ * @param cmd 受信したコマンド文字列
+ */
+void process_command(char *cmd) {
+  int size;
+  if (strcasecmp(cmd, "help") == 0) {
+    cmd_help();
+  } else if (strcasecmp(cmd, "version") == 0) {
+    cmd_version();
+  } else if (strcasecmp(cmd, "clear") == 0) {
+    cmd_clear();
+  } else if (strcasecmp(cmd, "execute") == 0) {
+    cmd_execute();
+  } else if (strcasecmp(cmd, "showprog") == 0) {
+    Serial.write("+OK\r\n");
+  } else if (sscanf(cmd, "write %d", &size) == 1) {
+    cmd_write(size);
+  } else if (strlen(cmd) > 0) {
+    Serial.write("-ERR Illegal command '");
+    Serial.write(cmd);
+    Serial.write("'\r\n");
+  }
+}
 
+// =================================================================
+// Arduino メイン処理 (setup, loop)
+// =================================================================
+
+/**
+ * @brief 初期化処理
+ */
 void setup() {
-  Serial.begin(115200);
+  Serial.begin(SERIAL_BAUD_RATE);
+  Serial.setTimeout(5000);
   Wire.begin();
   pinMode(LED_BUILTIN, OUTPUT);
 
-  Serial.println("+OK mruby/c v3.3 RITE0300 MRBW1.2");
-
-  char command[32];
-  int cmd_pos = 0;
-  unsigned long start = millis();
-
-  // 一定時間だけコマンド受付待機
-  while (millis() - start < 5000) {
+  // mrbwriteとの同期: 起動時にCRLFを受信するまで待機
+  unsigned long start_time = millis();
+  while (millis() - start_time < 3000) {
     if (Serial.available()) {
       char c = Serial.read();
-      if (c == '\n' || c == '\r') {
-        command[cmd_pos] = '\0';
-        cmd_pos = 0;
-
-        if (strncmp(command, "write", 5) == 0) {
-          int size = atoi(&command[6]);
-          if (size <= 0 || size > MAX_MRB_SIZE) {
-            Serial.println("-ERR invalid size");
-            return;
-          }
-
-          Serial.println("+OK Write bytecode.");
-
-          // バイトコード受信
-          int received = 0;
-          while (received < size) {
-            if (Serial.available()) {
-              memory_pool[received++] = Serial.read();
-            }
-          }
-
-          if (strncmp((char *)memory_pool, "RITE", 4) != 0) {
-            Serial.println("-ERR No RITE header");
-            return;
-          }
-
-          if (flash_erase_page(FLASH_ADDR) != 0) {
-            Serial.println("-ERR Flash erase failed");
-            return;
-          }
-
-          if (flash_write_data(FLASH_ADDR, memory_pool, size) != 0) {
-            Serial.println("-ERR Flash write failed");
-            return;
-          }
-
-          irep_size = size;
-          Serial.println("+DONE");
-        }
-        else if (strncmp(command, "execute", 7) == 0) {
-          const uint32_t *p = (const uint32_t*)FLASH_ADDR;
-          if (*p == 0x45744952) {
-            memcpy(mrbbuf_ram, (const void*)FLASH_ADDR, MAX_MRB_SIZE);
-            Serial.println("+OK Execute");
-          } else {
-            Serial.println("-ERR No bytecode");
-            return;
-          }
-        }
-        else {
-          Serial.println("-ERR unknown command");
-        }
-      }
-      else if (cmd_pos < sizeof(command) - 1) {
-        command[cmd_pos++] = c;
+      if (c == '\r' || c == '\n') {
+        break;
       }
     }
   }
-
-  // 実行準備ができていたらmruby VM実行
-  if (strncmp((char *)mrbbuf_ram, "RITE", 4) == 0) {
-    Serial.println("Flash内のバイトコードを実行します...");
-    mrubyc();
-  } else {
-    Serial.println("バイトコードなし。LED点滅します。");
-    for (int i = 0; i < 10; i++) {
-      digitalWrite(LED_BUILTIN, HIGH); delay(150);
-      digitalWrite(LED_BUILTIN, LOW); delay(150);
-    }
-  }
+  Serial.write(VERSION_STRING);
 }
 
+/**
+ * @brief メインループ。シリアルからのコマンド入力を待機する
+ */
 void loop() {
-  // put your main code here, to run repeatedly:
-  if (digitalRead(PIN_BUTTON_A) == LOW && digitalRead(PIN_BUTTON_B) == LOW) {
-    Serial.println("A&B Button ON");
-    delay(300);
-  } else if (digitalRead(PIN_BUTTON_A) == LOW) {
-    Serial.println("A Button ON");
-    delay(300);
-  } else if (digitalRead(PIN_BUTTON_B) == LOW) {
-    Serial.println("B Button ON");
-    delay(300);
+  if (Serial.available()) {
+    char c = Serial.read();
+    if (c == '\r' || c == '\n') {
+      if (cmd_pos > 0) {
+        command_buf[cmd_pos] = '\0';
+        process_command(command_buf);
+      }
+      cmd_pos = 0;
+    } else if (cmd_pos < sizeof(command_buf) - 1) {
+      command_buf[cmd_pos++] = c;
+    }
   }
 }
