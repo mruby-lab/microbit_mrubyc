@@ -1,9 +1,26 @@
-// mruby/c boot
+/**
+ * @file mrubyc.c
+ * @brief mruby/cの初期化と、C言語で実装されたカスタムメソッドの登録
+ * @details C++依存のコードを完全に分離し、.ino側で定義された
+ * C言語互換のラッパー関数を呼び出す。
+ */
 
 #include "mrubyc.h"
 #include "c_robot.h"
 #include "c_flash_memory.h"
 #include <nrf.h>
+
+// .ino側で実装されるC言語互換のラッパー関数のプロトタイプ宣言
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+void c_if_display_show(const char* image_data);
+
+#ifdef __cplusplus
+}
+#endif
+
 
 #if !defined(MRBC_MEMORY_SIZE)
 #define MRBC_MEMORY_SIZE (1024*40)
@@ -29,6 +46,17 @@ static void c_message(struct VM *vm, mrbc_value v[], int argc){
     }
   }
 }
+
+// Rubyの `display_show` 命令を処理するC言語関数
+static void c_display_show(mrbc_vm *vm, mrbc_value v[], int argc) {
+  if (argc == 1 && v[1].tt == MRBC_TT_STRING) {
+    const char* image_data = mrbc_string_cstr(&v[1]);
+    // .ino側で実装されたラッパー関数に処理を渡す
+    c_if_display_show(image_data);
+  }
+  SET_NIL_RETURN();
+}
+
 
 int flash_write_data(uint32_t addr, const uint8_t *data, int len) {
   if (addr % 1024 != 0 || addr >= 0x00040000) return 1;
@@ -66,9 +94,10 @@ int mrubyc(void){
 
   mrbc_init(memory_pool, MRBC_MEMORY_SIZE);
   
-
-  // Define your own class.
+  // カスタムメソッドの登録
   mrbc_define_method(0, mrbc_class_object, "message", c_message);
+  mrbc_define_method(0, mrbc_class_object, "display_show", c_display_show);
+
   robot_init();
   flash_memory_init();
 

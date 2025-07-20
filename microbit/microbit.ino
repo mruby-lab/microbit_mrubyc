@@ -1,16 +1,17 @@
 /**
  * @file microbit.ino
- * @brief mrbwrite.exeおよびWebAPI(kaniwriter等)と連携する、mruby/c書き込みファームウェア
- * @version 10.2 (Final Fix)
- * @date 2025-07-10
+ * @brief mruby/cを搭載したTinybitロボット用 最終完成版ファームウェア
+ * @version 23.1 (Final Version)
+ * @date 2025-07-20
  * @details
- * ログの乱れを修正するため、コマンド受信ロジックを堅牢なラインバッファ方式に変更。
- * これにより、CRLF, CR, LFを単一の区切りとして正確に処理し、通信を完全に安定させた最終版。
- * helpコマンドの処理を追加。
+ * PCからのコマンド受付と、内蔵/書き込みプログラムの実行に対応。
+ * C++とmruby/c(C言語)を連携させ、Rubyからハードウェアを制御する。
+ * 全機能が正常に動作する完成版。
  */
 
 #include <Arduino.h>
 #include <Wire.h>
+#include <Adafruit_Microbit.h>
 
 // --- mruby/c ヘッダ ---
 #ifdef __cplusplus
@@ -27,8 +28,35 @@ extern "C" {
 #define SERIAL_BAUD_RATE 115200
 #define MAX_MRB_SIZE 2048
 #define FLASH_ADDR 0x0003F000
-// kaniwriterで使用するmrbcバージョン(3.1.0)に合わせる
+#define WRITE_WAIT_TIMEOUT 3000
 #define VERSION_STRING "+OK mruby/c v3.1 RITE0300 MRBW1.2\r\n"
+
+// =================================================================
+// デフォルトで実行するサンプルプログラム (5x5 LED全面点滅)
+// =================================================================
+const uint8_t default_mrb[] = {
+  0x52,0x49,0x54,0x45,0x30,0x33,0x30,0x30,0x00,0x00,0x01,0x41,0x4d,0x41,0x54,0x5a,
+  0x30,0x30,0x30,0x30,0x49,0x52,0x45,0x50,0x00,0x00,0x01,0x04,0x30,0x33,0x30,0x30,
+  0x00,0x00,0x00,0xf8,0x00,0x03,0x00,0x06,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x2c,
+  0x51,0x01,0x00,0x51,0x02,0x01,0x01,0x04,0x01,0x2d,0x03,0x00,0x01,0x0e,0x04,0x01,
+  0xf4,0x2d,0x03,0x01,0x01,0x01,0x04,0x02,0x2d,0x03,0x00,0x01,0x0e,0x04,0x01,0xf4,
+  0x2d,0x03,0x01,0x01,0x25,0xff,0xdf,0x11,0x03,0x38,0x03,0x69,0x00,0x02,0x00,0x00,
+  0x64,0x32,0x35,0x35,0x2c,0x32,0x35,0x35,0x2c,0x32,0x35,0x35,0x2c,0x32,0x35,0x35,
+  0x2c,0x32,0x35,0x35,0x0a,0x32,0x35,0x35,0x2c,0x32,0x35,0x35,0x2c,0x32,0x35,0x35,
+  0x2c,0x32,0x35,0x35,0x2c,0x32,0x35,0x35,0x0a,0x32,0x35,0x35,0x2c,0x32,0x35,0x35,
+  0x2c,0x32,0x35,0x35,0x2c,0x32,0x35,0x35,0x2c,0x32,0x35,0x35,0x0a,0x32,0x35,0x35,
+  0x2c,0x32,0x35,0x35,0x2c,0x32,0x35,0x35,0x2c,0x32,0x35,0x35,0x2c,0x32,0x35,0x35,
+  0x0a,0x32,0x35,0x35,0x2c,0x32,0x35,0x35,0x2c,0x32,0x35,0x35,0x2c,0x32,0x35,0x35,
+  0x2c,0x32,0x35,0x35,0x0a,0x00,0x00,0x00,0x32,0x30,0x2c,0x30,0x2c,0x30,0x2c,0x30,
+  0x2c,0x30,0x0a,0x30,0x2c,0x30,0x2c,0x30,0x2c,0x30,0x2c,0x30,0x0a,0x30,0x2c,0x30,
+  0x2c,0x30,0x2c,0x30,0x2c,0x30,0x0a,0x30,0x2c,0x30,0x2c,0x30,0x2c,0x30,0x2c,0x30,
+  0x0a,0x30,0x2c,0x30,0x2c,0x30,0x2c,0x30,0x2c,0x30,0x0a,0x00,0x00,0x02,0x00,0x0c,
+  0x64,0x69,0x73,0x70,0x6c,0x61,0x79,0x5f,0x73,0x68,0x6f,0x77,0x00,0x00,0x08,0x73,
+  0x6c,0x65,0x65,0x70,0x5f,0x6d,0x73,0x00,0x4c,0x56,0x41,0x52,0x00,0x00,0x00,0x21,
+  0x00,0x00,0x00,0x02,0x00,0x06,0x61,0x6c,0x6c,0x5f,0x6f,0x6e,0x00,0x07,0x61,0x6c,
+  0x6c,0x5f,0x6f,0x66,0x66,0x00,0x00,0x00,0x01,0x45,0x4e,0x44,0x00,0x00,0x00,0x00,0x08,
+};
+
 
 // =================================================================
 // グローバル変数・外部関数
@@ -36,115 +64,102 @@ extern "C" {
 extern "C" {
   uint8_t memory_pool[MAX_MRB_SIZE];
   uint8_t mrbbuf_ram[MAX_MRB_SIZE];
-
   int flash_write_data(uint32_t addr, const uint8_t *data, int len);
   int flash_erase_page(uint32_t addr);
   int mrubyc(void);
-
   void my_w_beginTrans(int address) { Wire.beginTransmission(address); }
   void my_w_wire(int data) { Wire.write(data); }
   void my_w_endTrans() { Wire.endTransmission(); }
-
   void my_putc(int c) { if (Serial) Serial.write(c); }
   void my_print(char *buf) { if (Serial) Serial.print(buf); }
   void my_println(char *buf) { if (Serial) Serial.println(buf); }
 }
 
-// =================================================================
-// コマンド処理関数群
-// =================================================================
+Adafruit_Microbit_Matrix microbit;
 
-void cmd_help() {
-  Serial.write("+OK\r\n");
-  Serial.write("Commands:\r\n");
-  Serial.write("  version\r\n");
-  Serial.write("  clear\r\n");
-  Serial.write("  write <size>\r\n");
-  Serial.write("  execute\r\n");
-  Serial.write("  showprog\r\n");
-  Serial.write("+DONE\r\n");
-}
-
-void cmd_version() {
-  Serial.write(VERSION_STRING);
-}
-
-void cmd_clear() {
-  if (flash_erase_page(FLASH_ADDR) == 0) {
-    Serial.write("+OK\r\n");
-  } else {
-    Serial.write("-ERR Flash erase failed\r\n");
+extern "C" void c_if_display_show(const char* image_data_const) {
+  char image_data[strlen(image_data_const) + 1];
+  strcpy(image_data, image_data_const);
+  microbit.clear();
+  char *saveptr_row; // 行を分割する作業の状態を覚えておくためのメモ帳
+  char *row = strtok_r(image_data, "\n", &saveptr_row);
+  for (int y = 0; y < 5 && row != NULL; y++) {
+    char *saveptr_pixel;
+    char *pixel = strtok_r(row, ",", &saveptr_pixel);
+    for (int x = 0; x < 5 && pixel != NULL; x++) {
+      if (atoi(pixel) > 0) {
+        microbit.drawPixel(x, y, LED_ON);
+      }
+      pixel = strtok_r(NULL, ",", &saveptr_pixel);
+    }
+    row = strtok_r(NULL, "\n", &saveptr_row);
   }
 }
 
+
+// =================================================================
+// プログラム実行/コマンド処理関数
+// =================================================================
+void process_command(String cmd);
+void cmd_version() { Serial.write(VERSION_STRING); }
+void cmd_clear() { if (flash_erase_page(FLASH_ADDR) == 0) Serial.write("+OK\r\n"); else Serial.write("-ERR Flash erase failed\r\n"); }
 void cmd_write(int size) {
-  if (size <= 0 || size > MAX_MRB_SIZE) {
-    Serial.write("-ERR invalid size\r\n");
-    return;
-  }
+  if (size <= 0 || size > MAX_MRB_SIZE) { Serial.write("-ERR invalid size\r\n"); return; }
   Serial.write("+OK Write bytecode\r\n");
   Serial.flush();
-  while (Serial.available()) {
-    Serial.read();
-  }
+  while (Serial.available()) { Serial.read(); }
   uint8_t *buf = (uint8_t *)malloc(size);
-  if (!buf) {
-    Serial.write("-ERR malloc failed\r\n");
-    return;
-  }
+  if (!buf) { Serial.write("-ERR malloc failed\r\n"); return; }
   int received = Serial.readBytes((char *)buf, size);
-  if (received != size) {
-    Serial.write("-ERR receive timeout\r\n");
-    free(buf);
-    return;
-  }
-  if (memcmp(buf, "RITE", 4) != 0) {
-    Serial.write("-ERR No RITE header\r\n");
-    free(buf);
-    return;
-  }
-  if (flash_erase_page(FLASH_ADDR) != 0) {
-    Serial.write("-ERR Flash erase failed\r\n");
-    free(buf);
-    return;
-  }
-  if (flash_write_data(FLASH_ADDR, buf, size) != 0) {
-    Serial.write("-ERR Flash write failed\r\n");
-    free(buf);
-    return;
-  }
+  if (received != size) { Serial.write("-ERR receive timeout\r\n"); free(buf); return; }
+  if (memcmp(buf, "RITE", 4) != 0) { Serial.write("-ERR No RITE header\r\n"); free(buf); return; }
+  if (flash_erase_page(FLASH_ADDR) != 0) { Serial.write("-ERR Flash erase failed\r\n"); free(buf); return; }
+  if (flash_write_data(FLASH_ADDR, buf, size) != 0) { Serial.write("-ERR Flash write failed\r\n"); free(buf); return; }
   Serial.write("+DONE\r\n");
   free(buf);
 }
-
 void cmd_execute() {
   const uint8_t *p = (const uint8_t *)FLASH_ADDR;
-  if (memcmp(p, "RITE", 4) != 0) {
-    Serial.write("-ERR No bytecode\r\n");
-    return;
-  }
+  if (memcmp(p, "RITE", 4) != 0) { Serial.write("-ERR No bytecode\r\n"); return; }
   Serial.write("+OK Execute mruby/c.\r\n");
   memcpy(mrbbuf_ram, p, MAX_MRB_SIZE);
   mrubyc();
 }
+void execute_program(const uint8_t *bytecode) {
+  memcpy(mrbbuf_ram, bytecode, MAX_MRB_SIZE);
+  mrubyc();
+}
 
-void process_command(char *cmd) {
-  int size;
-  if (strcasecmp(cmd, "help") == 0) {
-    cmd_help();
-  } else if (strcasecmp(cmd, "version") == 0) {
+void process_command(String cmd) {
+  cmd.trim();
+  if (cmd.length() == 0) {
     cmd_version();
-  } else if (strcasecmp(cmd, "clear") == 0) {
-    cmd_clear();
-  } else if (strcasecmp(cmd, "execute") == 0) {
-    cmd_execute();
-  } else if (strcasecmp(cmd, "showprog") == 0) {
+    return;
+  }
+  int size;
+  if (cmd.equalsIgnoreCase("help")) {
     Serial.write("+OK\r\n");
-  } else if (sscanf(cmd, "write %d", &size) == 1) {
+    Serial.write("Commands:\r\n");
+    Serial.write("  help\r\n");
+    Serial.write("  version\r\n");
+    Serial.write("  clear\r\n");
+    Serial.write("  write\r\n");
+    Serial.write("  execute\r\n");
+    Serial.write("  showprog\r\n");
+    Serial.write("+DONE\r\n");
+  } else if (cmd.equalsIgnoreCase("version")) {
+    cmd_version();
+  } else if (cmd.equalsIgnoreCase("clear")) {
+    cmd_clear();
+  } else if (cmd.equalsIgnoreCase("execute")) {
+    cmd_execute();
+  } else if (cmd.equalsIgnoreCase("showprog")) {
+    Serial.write("+OK\r\n");
+  } else if (sscanf(cmd.c_str(), "write %d", &size) == 1) {
     cmd_write(size);
-  } else if (strlen(cmd) > 0) {
+  } else {
     Serial.write("-ERR Illegal command '");
-    Serial.write(cmd);
+    Serial.print(cmd);
     Serial.write("'\r\n");
   }
 }
@@ -152,48 +167,32 @@ void process_command(char *cmd) {
 // =================================================================
 // Arduino メイン処理 (setup, loop)
 // =================================================================
-
 void setup() {
   Serial.begin(SERIAL_BAUD_RATE);
   Serial.setTimeout(5000);
   Wire.begin();
-  pinMode(LED_BUILTIN, OUTPUT);
-  // 起動時は何も送信せず、ホストからの最初のCRLFをloop()で待ち受ける
-}
+  microbit.begin();
 
-void loop() {
-  static char command_buf[64];
-  static int cmd_pos = 0;
-  static bool line_ended = false; // CRLFによる二重処理を防ぐためのフラグ
-
-  if (Serial.available()) {
-    char c = Serial.read();
-
-    // CR('\r') または LF('\n') を行の終わりとして処理する
-    if (c == '\r' || c == '\n') {
-      // ただし、直前に改行文字を処理していない場合のみ実行
-      if (!line_ended) {
-        command_buf[cmd_pos] = '\0'; // 文字列を終端
-
-        if (cmd_pos > 0) {
-          // バッファに何かあれば、それはコマンド
-          process_command(command_buf);
-        } else {
-          // バッファが空なら、それは同期のためのCRLF
-          cmd_version();
+  unsigned long start_time = millis();
+  while (millis() - start_time < WRITE_WAIT_TIMEOUT) {
+    if (Serial.available()) {
+      while(true) {
+        if (Serial.available() > 0) {
+          String command = Serial.readStringUntil('\n');
+          process_command(command);
         }
-        
-        // 次のコマンドのためにバッファをリセット
-        cmd_pos = 0;
-      }
-      // CR/LFの連続を1つの改行として扱うためにフラグを立てる
-      line_ended = true;
-    } else {
-      // 通常の文字が来たら、改行は終わったと判断
-      line_ended = false;
-      if (cmd_pos < sizeof(command_buf) - 1) {
-        command_buf[cmd_pos++] = c;
       }
     }
   }
+
+  const uint8_t *p = (const uint8_t *)FLASH_ADDR;
+  if (memcmp(p, "RITE", 4) == 0) {
+    execute_program(p);
+  } else {
+    execute_program(default_mrb);
+  }
+}
+
+void loop() {
+  // フェールセーフ
 }
