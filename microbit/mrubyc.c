@@ -8,6 +8,7 @@
 #include "mrubyc.h"
 #include "c_robot.h"
 #include "c_flash_memory.h"
+#include "c_gpio.h"
 #include <nrf.h>
 
 // .ino側で実装されるC言語互換のラッパー関数のプロトタイプ宣言
@@ -100,6 +101,7 @@ int mrubyc(void){
 
   robot_init();
   flash_memory_init();
+  gpio_init();
 
   if( !mrbc_create_task(mrbbuf_ram, NULL) ) return 1;
   int ret = mrbc_run();

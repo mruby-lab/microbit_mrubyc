@@ -1,19 +1,20 @@
 /**
  * @file microbit.ino
  * @brief mruby/cを搭載したTinybitロボット用 最終完成版ファームウェア
- * @version 23.1 (Final Version)
- * @date 2025-07-20
+ * @version 24.0 (Final Reviewed Version)
+ * @date 2025-07-24
  * @details
- * PCからのコマンド受付と、内蔵/書き込みプログラムの実行に対応。
- * C++とmruby/c(C言語)を連携させ、Rubyからハードウェアを制御する。
- * 全機能が正常に動作する完成版。
+ * PCからのコマンド受付と、内蔵/書き込みプログラムの実行に対応するデュアルモードシステム。
+ * C++でハードウェア制御のラッパーを実装し、mruby/c(C言語)から呼び出せるように連携する。
  */
 
+//  Arduinoの基本機能を明示的にインクルード
 #include <Arduino.h>
 #include <Wire.h>
 #include <Adafruit_Microbit.h>
 
 // --- mruby/c ヘッダ ---
+// C++の世界からC言語のファイルを読み込むための作法
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -60,13 +61,17 @@ const uint8_t default_mrb[] = {
 
 // =================================================================
 // グローバル変数・外部関数
+// ★修正点2: C++とC言語の連携部分であることをコメントで明確化
 // =================================================================
 extern "C" {
+  // mrubyc.c で定義されているC言語の変数や関数
   uint8_t memory_pool[MAX_MRB_SIZE];
   uint8_t mrbbuf_ram[MAX_MRB_SIZE];
   int flash_write_data(uint32_t addr, const uint8_t *data, int len);
   int flash_erase_page(uint32_t addr);
   int mrubyc(void);
+
+  // mrubyc.c から呼び出される、この.inoファイルで実装するC++のラッパー関数
   void my_w_beginTrans(int address) { Wire.beginTransmission(address); }
   void my_w_wire(int data) { Wire.write(data); }
   void my_w_endTrans() { Wire.endTransmission(); }
@@ -75,13 +80,15 @@ extern "C" {
   void my_println(char *buf) { if (Serial) Serial.println(buf); }
 }
 
+// C++のオブジェクト。C言語からは直接アクセスできない。
 Adafruit_Microbit_Matrix microbit;
 
+// C言語の世界(mrubyc.c)から、C++のmicrobitオブジェクトを操作するための「橋渡し役」関数
 extern "C" void c_if_display_show(const char* image_data_const) {
   char image_data[strlen(image_data_const) + 1];
   strcpy(image_data, image_data_const);
   microbit.clear();
-  char *saveptr_row; // 行を分割する作業の状態を覚えておくためのメモ帳
+  char *saveptr_row;
   char *row = strtok_r(image_data, "\n", &saveptr_row);
   for (int y = 0; y < 5 && row != NULL; y++) {
     char *saveptr_pixel;
@@ -174,8 +181,12 @@ void setup() {
   microbit.begin();
 
   unsigned long start_time = millis();
+  // ★修正点3: デュアルモードの動作をコメントで解説
+  // 起動後3秒間、PCからのシリアルデータ受信を待つ
   while (millis() - start_time < WRITE_WAIT_TIMEOUT) {
     if (Serial.available()) {
+      // データを受信したら、コマンドモードに移行し、無限ループに入る。
+      // これにより、リセットされるまでコマンドを受け付け続ける。
       while(true) {
         if (Serial.available() > 0) {
           String command = Serial.readStringUntil('\n');
@@ -185,14 +196,18 @@ void setup() {
     }
   }
 
+  // 3秒経ってもデータが来なかった場合、スタンドアローンモードとして動作する
   const uint8_t *p = (const uint8_t *)FLASH_ADDR;
   if (memcmp(p, "RITE", 4) == 0) {
+    // Flashに書き込まれたプログラムがあれば実行
     execute_program(p);
   } else {
+    // なければデフォルトのプログラムを実行
     execute_program(default_mrb);
   }
 }
 
 void loop() {
-  // フェールセーフ
+  // 通常、mrubyc()が実行され続けるため、このループには到達しない。
+  // もしmruby/cプログラムが終了した場合のフェールセーフとして機能する。
 }
