@@ -102,6 +102,7 @@ int mrubyc(void){
   robot_init();
   flash_memory_init();
   gpio_init();
+  pwm_init();
 
   if( !mrbc_create_task(mrbbuf_ram, NULL) ) return 1;
   int ret = mrbc_run();

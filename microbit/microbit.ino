@@ -1,14 +1,15 @@
 /**
  * @file microbit.ino
  * @brief mruby/cを搭載したTinybitロボット用 最終完成版ファームウェア
- * @version 24.0 (Final Reviewed Version)
+ * @version 28.0 (Truly Final Version)
  * @date 2025-07-24
  * @details
  * PCからのコマンド受付と、内蔵/書き込みプログラムの実行に対応するデュアルモードシステム。
  * C++でハードウェア制御のラッパーを実装し、mruby/c(C言語)から呼び出せるように連携する。
+ * ピン割り込みを利用した、Aボタン5秒長押しによる確実なリセット機能を搭載。
  */
 
-//  Arduinoの基本機能を明示的にインクルード
+// Arduinoの基本機能を明示的にインクルード
 #include <Arduino.h>
 #include <Wire.h>
 #include <Adafruit_Microbit.h>
@@ -31,6 +32,8 @@ extern "C" {
 #define FLASH_ADDR 0x0003F000
 #define WRITE_WAIT_TIMEOUT 3000
 #define VERSION_STRING "+OK mruby/c v3.1 RITE0300 MRBW1.2\r\n"
+#define BUTTON_A_PIN 5
+#define DEBOUNCE_TIME_MS 50 // チャタリング防止用の時間(ミリ秒)
 
 // =================================================================
 // デフォルトで実行するサンプルプログラム (5x5 LED全面点滅)
@@ -61,7 +64,6 @@ const uint8_t default_mrb[] = {
 
 // =================================================================
 // グローバル変数・外部関数
-// ★修正点2: C++とC言語の連携部分であることをコメントで明確化
 // =================================================================
 extern "C" {
   // mrubyc.c で定義されているC言語の変数や関数
@@ -103,6 +105,43 @@ extern "C" void c_if_display_show(const char* image_data_const) {
   }
 }
 
+// =================================================================
+// Aボタン長押しリセット用の割り込み関数
+// =================================================================
+volatile unsigned long g_button_a_press_start_time = 0;
+volatile unsigned long g_last_interrupt_time = 0;
+
+/**
+ * @brief ボタンAの状態が変化した時に呼び出される割り込みハンドラ
+ * @details
+ * チャタリング対策済み。ボタンAが押された瞬間にタイマーを開始し、
+ * 離された時点で押されていた時間が5秒以上であればリセットを実行する。
+ */
+void handle_button_a_change() {
+  unsigned long current_time = millis();
+
+  // チャタリング防止
+  if (current_time - g_last_interrupt_time < DEBOUNCE_TIME_MS) {
+    return;
+  }
+  g_last_interrupt_time = current_time;
+
+  // ボタンAが押されているかチェック
+  if (digitalRead(BUTTON_A_PIN) == LOW) {
+    // 押された瞬間：タイマーを開始
+    g_button_a_press_start_time = current_time;
+  } else {
+    // 離された瞬間：タイマーが動いていれば、長押し時間を判定
+    if (g_button_a_press_start_time > 0) {
+      unsigned long press_duration = current_time - g_button_a_press_start_time;
+      if (press_duration >= 5000) {
+        NVIC_SystemReset();
+      }
+      // タイマーをリセット
+      g_button_a_press_start_time = 0;
+    }
+  }
+}
 
 // =================================================================
 // プログラム実行/コマンド処理関数
@@ -175,13 +214,27 @@ void process_command(String cmd) {
 // Arduino メイン処理 (setup, loop)
 // =================================================================
 void setup() {
+  // ソフトウェアリセット後も値が残ってしまう可能性のあるグローバル変数を、ここで明示的に初期化する
+  g_button_a_press_start_time = 0;
+  g_last_interrupt_time = 0;
+
   Serial.begin(SERIAL_BAUD_RATE);
   Serial.setTimeout(5000);
   Wire.begin();
   microbit.begin();
 
+  // Aボタン長押しリセット機能の初期設定
+  pinMode(BUTTON_A_PIN, INPUT_PULLUP);
+  // ボタンAの状態が変化(押し/離し)したら、handle_button_a_change関数を呼び出す
+  attachInterrupt(digitalPinToInterrupt(BUTTON_A_PIN), handle_button_a_change, CHANGE);
+
+  // ★★★ 修正点 ★★★
+  // 待機ループに入る前に、シリアル受信バッファをクリアする
+  while (Serial.available() > 0) {
+    Serial.read();
+  }
+
   unsigned long start_time = millis();
-  // ★修正点3: デュアルモードの動作をコメントで解説
   // 起動後3秒間、PCからのシリアルデータ受信を待つ
   while (millis() - start_time < WRITE_WAIT_TIMEOUT) {
     if (Serial.available()) {
@@ -208,6 +261,6 @@ void setup() {
 }
 
 void loop() {
-  // 通常、mrubyc()が実行され続けるため、このループには到達しない。
-  // もしmruby/cプログラムが終了した場合のフェールセーフとして機能する。
+  // mrubyc()がメインの処理を行うため、このloop()は基本的に空で良い。
+  // 割り込みがバックグラウンドでボタン監視とリセット処理を担当してくれる。
 }
