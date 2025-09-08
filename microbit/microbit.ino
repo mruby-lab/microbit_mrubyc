@@ -134,7 +134,7 @@ void handle_button_a_change() {
     // 離された瞬間：タイマーが動いていれば、長押し時間を判定
     if (g_button_a_press_start_time > 0) {
       unsigned long press_duration = current_time - g_button_a_press_start_time;
-      if (press_duration >= 5000) {
+      if (press_duration >= 3000) {
         NVIC_SystemReset();
       }
       // タイマーをリセット
