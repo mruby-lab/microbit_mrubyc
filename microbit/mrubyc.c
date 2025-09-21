@@ -9,7 +9,7 @@
 #include "c_robot.h"
 #include "c_flash_memory.h"
 #include "c_gpio.h"
-#include "c_motor_api.h"
+#include "c_tinybit.h"
 #include <nrf.h>
 
 // .ino側で実装されるC言語互換のラッパー関数のプロトタイプ宣言
@@ -104,7 +104,7 @@ int mrubyc(void){
   flash_memory_init();
   gpio_init();
   pwm_init();
-  motor_api_init();
+  tinybit_init();
   ledmatrix_init();
   
   if( !mrbc_create_task(mrbbuf_ram, NULL) ) return 1;
