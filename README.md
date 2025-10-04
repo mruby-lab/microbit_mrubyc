@@ -68,12 +68,4 @@ execute: プログラムの実行を開始します。
 ## APIリファレンス
 [利用可能なクラス](doc/class.md)
 
-LEDMatrix.display(character): 1文字を表示します。
 
-使用例:
-```Ruby
-# 'A'を表示したあと、中央のLEDを点灯
-LEDMatrix.display('A')
-sleep(1)
-LEDMatrix.write(2, 2, 1)
-```
