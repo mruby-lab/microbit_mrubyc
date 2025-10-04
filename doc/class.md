@@ -2,7 +2,7 @@
 
 汎用的なデジタル入出力を制御します。
 
-GPIO.new(pin, mode): オブジェクトを生成します。
+- GPIO.new(pin, mode): オブジェクトを生成します。
 
 pin: ピン番号 (Integer)
 
@@ -76,3 +76,13 @@ tinybit.move(:forward, 150, 150)
 LEDMatrix.clear(): 全てのLEDを消灯します。
 
 LEDMatrix.write(x, y, value): 指定した座標のLEDを点灯/消灯します。
+
+LEDMatrix.display(character): 1文字を表示します。
+
+使用例:
+```Ruby
+# 'A'を表示したあと、中央のLEDを点灯
+LEDMatrix.display('A')
+sleep(1)
+LEDMatrix.write(2, 2, 1)
+```
