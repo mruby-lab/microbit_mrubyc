@@ -47,7 +47,7 @@ right_motor = PWM.new(1)
 left_motor.duty(200)
 right_motor.duty(-200)
 ```
-## Tinybit クラス
+## Tinybit クラス(メインクラス）
 ロボットの機能を統括する司令塔です。
 
 Tinybit.new(): 司令塔オブジェクトを生成します。
@@ -70,6 +70,58 @@ tinybit = Tinybit.new()
 tinybit.set_led_color(0, 0, 255) # 青色に
 tinybit.move(:forward, 150, 150)
 ```
+```Ruby
+# インスタンス生成
+car = Tinybit.new()
+led = LEDMatrix.new()
+led.display("GO") # 開始表示
+loop do
+dist = car.ultrasonic_distance()
+# 距離が20以上cmかつエラー,(-1)でない場合
+if dist >= 20 || dist ==-1
+car.move(:forward, 100, 100)
+led.clear()
+else
+# 障害物を検知して停止
+car.move(:stop, 0, 0)
+led.display("sad")
+end
+sleep 0.1
+end
+```
+
+```Ruby
+# インスタンスの生成
+car = Tinybit.new()
+
+# 無限ループでライントレースを実行
+while true
+  # センサの値を取得 (1: 黒, 0: 白 と仮定)
+  left_val = car.line_sensor_left()
+  right_val = car.line_sensor_right()
+
+  if left_val == 1 && right_val == 1
+    # 両方黒なら前進
+    car.move(:forward, 80, 80)
+    
+  elsif left_val == 1 && right_val == 0
+    # 左だけ黒なら左へ曲がる
+    car.move(:forward, 0, 80)
+    
+  elsif left_val == 0 && right_val == 1
+    # 右だけ黒なら右へ曲がる
+    car.move(:forward, 80, 0)
+    
+  else
+    # 両方白なら停止（コースアウト）
+    car.move(:stop, 0, 0)
+    break
+  end
+
+  sleep(0.05)
+end
+```
+
 ## LEDMatrix モジュール
 ボード上の5x5 LEDを制御します。(newは不要)
 
